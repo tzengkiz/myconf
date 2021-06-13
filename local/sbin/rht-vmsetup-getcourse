@@ -1,0 +1,199 @@
+#!/bin/bash
+
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     rht-vmsetup-getcourse - Red Hat Training Setup get course code and bits 
+#
+# SYNOPSIS
+#     rht-vmsetup-getcourse
+#
+# DESCRIPTION
+#     Sets up VM to obtain course code and bits.
+#
+# CHANGELOG
+#   * Mon Feb  4 2019 Robert Locke <rlocke@redhat.com>
+#   - initial rhel8.x fork
+
+networkdir=/etc/sysconfig/network-scripts
+
+# Source the variables if available
+[[ -r /etc/rht ]] && source /etc/rht
+venue=${RHT_VENUE:=ilt}
+
+function print_usage() {
+  local retcode=$1
+  cat <<-EOF
+$0 is a script to get course code and other bits.
+
+Usage: $0
+  will configure virtual machine to recognize the course being run.
+
+Usage: $0 --help
+  will display this usage information.
+
+EOF
+  exit ${retcode}
+}
+
+function parse_opts() {
+  ARGS=$(getopt -o h -l "help" -n "rht-vmsetup-getcourse" -- "$@")
+  if [[ $? -ne 0 ]]; then
+    print_usage 1
+  fi
+  eval set -- "${ARGS}"
+  while true ; do
+    case $1 in
+      -h|--help)
+        print_usage 0 ;;
+      --)
+        shift ; break ;;
+      *)
+        echo "Error: bad option, $1" ; print_usage 1 ;;
+    esac
+  done
+}
+
+# If not root, then sudo ourself and run as root
+if [[ "${EUID}" -gt "0" ]]; then
+  ${sudo:-/usr/bin/sudo} $0 "$@"
+  exit
+fi
+
+# Parse arguments
+parse_opts "$@"
+
+# Main code
+
+# Access existing variable values
+source /etc/rht
+
+echo "Starting download of course specific variables..."
+
+# Download default course variables
+counter=1
+while true ; do
+  if curl -f -s -o /tmp/rht-default http://content.example.com/ks/rht ; then
+    break
+  fi
+  sleep 3
+  let counter+1
+  if [[ counter -gt 20 ]]; then
+    echo "$(date -R): RHT_COURSE download FAILED!" >> /tmp/rclocal.log
+    echo "DOWNLOAD OF COURSE FAILED!" > /etc/motd
+    break
+  fi
+done
+
+# If we got a course code, then start applying changes
+if grep "RHT_COURSE" /tmp/rht-default &>/dev/null ; then
+  # Get downloaded variables
+  source /tmp/rht-default
+  # Grab rht values from bastion to override
+  if [[ "${RHT_ROLE}" != "bastion" ]]; then
+    counter=1
+    while true ; do
+      if curl -f -s -o /tmp/rht-bastion http://172.25.250.254/rht ; then
+        break
+      fi
+      sleep 3
+      let counter+1
+      if [[ counter -gt 20 ]]; then
+        echo "$(date -R): RHT_COURSE download FAILED!" >> /tmp/rclocal.log
+        echo "DOWNLOAD OF COURSE FAILED!" > /etc/motd
+        break
+      fi
+    done
+  fi
+  if grep "RHT_COURSE" /tmp/rht-bastion &>/dev/null ; then
+    source /tmp/rht-bastion
+  fi
+  # Apply changes, if we got a valid RHT_COURSE
+  if [[ -n "${RHT_COURSE}" ]]; then
+    sed -i -e "s|^RHT_VENUE=.*|RHT_VENUE=${RHT_VENUE}|" \
+           -e "s|^RHT_COURSE=.*|RHT_COURSE=${RHT_COURSE}|" \
+           -e "s|^RHT_TITLE=.*|RHT_TITLE=\"${RHT_TITLE}\"|" \
+           -e "s|^RHT_VMTREE=.*|RHT_VMTREE=\"${RHT_VMTREE}\"|" \
+        /etc/rht
+    # If we got a valid RHT_TIMEZONE, update locally
+    if [[ -f "/etc/${RHT_TIMEZONE}" ]]; then
+      mv /etc/localtime /etc/localtime-rhtorig
+      ln -s ${RHT_TIMEZONE} /etc/localtime
+    fi
+    source /etc/rht
+    # Retrieve course specific rht-vm-hosts (list of hostnames to serve up)
+    curl -f -s -o /tmp/rht-vm-hosts http://content.example.com/courses/${RHT_COURSE}/${RHT_VMTREE%/*}/infrastructure/rht-vm-hosts &>/dev/null
+    if [[ -f /tmp/rht-vm-hosts ]]; then
+      sed -i -e '/rht-vm-hosts/,$d' /etc/hosts
+      sed -i '$r /tmp/rht-vm-hosts' /etc/hosts
+      if [[ "${RHT_ROLE}" == "bastion" ]]; then
+        # Restart DNS server
+        systemctl restart dnsmasq.service
+        # Clear out existing firewall port redirections
+        while true; do
+          removeline=$(firewall-cmd --permanent --zone=external --list-all | grep forward-ports | sed 's/.*: //')
+          if [[ -n "${removeline}" ]]; then
+            firewall-cmd --permanent --zone=external --remove-forward-port=${removeline}
+          else
+            break
+          fi
+        done
+        # Parse /tmp/rht-vm-hosts and add permanent entries
+        ipaddresses=$(grep '^172\.' /tmp/rht-vm-hosts | cut -f1)
+        for ipaddr in ${ipaddresses} ; do
+          ip4th=$(echo ${ipaddr} | cut -d. -f4)
+          ipport=$((ip4th+53000))
+          firewall-cmd --permanent --zone=external --add-forward-port=port=${ipport}:proto=tcp:toport=22:toaddr=${ipaddr}
+        done
+        # Reload firewall
+        firewall-cmd --reload
+      fi
+    fi
+    # Reset hostname and RHT_ROLE to match obtained names
+    NIC1=$(cat /tmp/NIC1)
+    nic1ip=$(ip -f inet addr show ${NIC1} | awk '{ print $2 }' | grep -E -o "([0-9]{1,3}[\.]){3}[0-9]{1,3}")
+    if grep ${nic1ip} /tmp/rht-vm-hosts &>/dev/null ; then
+      # Extract FQDN and ROLE as shortname
+      myhost=$(getent hosts ${nic1ip} | awk '{ print $2 }')
+      role=$(echo ${myhost} | cut -d. -f1)
+      sed -i -e "s|^RHT_ROLE=.*|RHT_ROLE=${role}|" /etc/rht
+      # Statically set hostname
+      hostnamectl set-hostname "${myhost}"
+      source /etc/rht
+    fi
+    if [[ "${RHT_ROLE}" == "workstation" ]]; then
+      # Download the (updated) master lab script
+      lab_script=/usr/local/bin/lab
+      curl -f -s -o ${lab_script} http://content.example.com/courses/${RHT_COURSE}/${RHT_VMTREE%/*}/$(basename ${lab_script}) && chmod 755 ${lab_script}
+      # Download the (updated) lab-completion[-<course>]
+      lab_completion=/usr/share/bash-completion/completions/lab
+      if ! curl -f -s -o ${lab_completion} http://content.example.com/courses/${RHT_COURSE}/${RHT_VMTREE%/*}/lab-completion-${RHT_COURSE} ; then
+        curl -f -s -o ${lab_completion} http://content.example.com/courses/${RHT_COURSE}/${RHT_VMTREE%/*}/lab-completion
+      fi
+      if [[ ${RHT_ENROLLMENT} -eq 0 ]]; then
+        demo_script=/usr/local/bin/demo
+        demo_completion=/usr/share/bash-completion/completions/demo
+        [[ -x ${lab_script} ]] && ln -s ${lab_script} ${demo_script}
+        [[ -f ${lab_completion} ]] && ln -s ${lab_completion} ${demo_completion}
+      fi
+    fi
+    # Retrieve course/role specific rc.local and execute it
+    rclocal=${RHT_COURSE}-${RHT_ROLE}-rc.local
+    curl -f -s -o /etc/rc.d/${rclocal} http://content.example.com/ks/${rclocal}
+    if [[ -f "/etc/rc.d/${rclocal}" ]]; then
+      chmod +x /etc/rc.d/${rclocal}
+      /etc/rc.d/${rclocal}
+      touch /var/lock/subsys/${rclocal}
+    fi
+    [[ -f /etc/motd ]] && rm /etc/motd
+  else
+    echo "$(date -R): RHT_COURSE download EMPTY!" >> /tmp/rclocal.log
+    echo "DOWNLOAD OF COURSE FAILED!" > /etc/motd
+  fi
+else
+  echo "$(date -R): RHT_COURSE download FAILED!" >> /tmp/rclocal.log
+  echo "DOWNLOAD OF COURSE FAILED!" > /etc/motd
+fi
+
+echo "rht-vmsetup-getcourse done"
+

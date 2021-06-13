@@ -1,0 +1,215 @@
+#!/bin/bash
+
+# Copyright 2020 Red Hat, Inc.
+#
+# NAME
+#     rht-vmsetup-ifcfg - Red Hat Training Setup network devices 
+#
+# SYNOPSIS
+#     rht-vmsetup-ifcfg
+#
+# DESCRIPTION
+#     Sets up VM for dynamic network interfaces.
+#
+# CHANGELOG
+#   * Wed Mar 11 2020 Robert Locke <rlocke@redhat.com>
+#   - find NIC by device name as an alternative to MAC (8.1 feature)
+#   * Tue Feb 26 2019 Robert Locke <rlocke@redhat.com>
+#   - stop setting NIC2 on server/workstation (only bastion)
+#   * Wed Jan 30 2019 Robert Locke <rlocke@redhat.com>
+#   - initial rhel8.x fork
+
+networkdir=/etc/sysconfig/network-scripts
+
+# Source the variables if available
+[[ -r /etc/rht ]] && source /etc/rht
+venue=${RHT_VENUE:=ilt}
+
+function print_usage() {
+  local retcode=$1
+  cat <<-EOF
+$0 is a script to set up network interfaces.
+
+Usage: $0
+  will configure virtual machine to support detected interfaces.
+
+Usage: $0 --help
+  will display this usage information.
+
+EOF
+  exit ${retcode}
+}
+
+function parse_opts() {
+  ARGS=$(getopt -o h -l "help" -n "rht-vmsetup-ifcfg" -- "$@")
+  if [[ $? -ne 0 ]]; then
+    print_usage 1
+  fi
+  eval set -- "${ARGS}"
+  while true ; do
+    case $1 in
+      -h|--help)
+        print_usage 0 ;;
+      --)
+        shift ; break ;;
+      *)
+        echo "Error: bad option, $1" ; print_usage 1 ;;
+    esac
+  done
+}
+
+# If not root, then sudo ourself and run as root
+if [[ "${EUID}" -gt "0" ]]; then
+  ${sudo:-/usr/bin/sudo} $0 "$@"
+  exit
+fi
+
+# Parse arguments
+parse_opts "$@"
+
+# Main code
+
+# Determine NIC names for NIC1 and NIC2 (assume ifIndex 2 and 3)
+[[ -f /tmp/NIC1 ]] && mv /tmp/NIC1 /tmp/NIC1.old
+[[ -f /tmp/NIC2 ]] && mv /tmp/NIC2 /tmp/NIC2.old
+ip a | grep '^2:' | cut -d':' -f2 | sed -e 's/^[ \t]*//' | grep '^e' > /tmp/NIC1
+ip a | grep '^3:' | cut -d':' -f2 | sed -e 's/^[ \t]*//' | grep '^e' > /tmp/NIC2
+NIC1=$(cat /tmp/NIC1)
+NIC2=$(cat /tmp/NIC2)
+
+# Configure NIC1
+echo "Starting configuration of ${NIC1}..."
+
+if [[ -n "${NIC1}" ]]; then
+  nmcli con up ifname ${NIC1} &>/dev/null
+  UUID1=$(nmcli -t -f DEVICE,UUID,NAME con show | grep ${NIC1} | cut -d: -f2)
+  if [[ -z "${UUID1}" || "${UUID1}" == "--" ]]; then
+    # Obtain HWADDR
+    N1HW=$(ip link sh ${NIC1} | grep k/eth | sed 's/^    //' | cut -d' ' -f2)
+    N1HW=${N1HW^^}
+    # Get filename that has HWADDR
+    N1FILE=$(grep -l ${N1HW} /etc/sysconfig/network-scripts/ifcfg-* | tail -1)
+    if [[ -n "${N1FILE}" ]]; then
+      # Get UUID from that filename
+      UUID1=$(grep '^UUID' ${N1FILE} | sed 's/UUID=//')
+    else
+      N1FILE=$(grep -l ${NIC1} /etc/sysconfig/network-scripts/ifcfg-* | tail -1)
+      if [[ -n "${N1FILE}" ]]; then
+        # Get UUID from that filename
+        UUID1=$(grep '^UUID' ${N1FILE} | sed 's/UUID=//')
+      fi
+    fi
+  fi
+fi
+
+# Remove existing configuration files
+[[ -f /tmp/NIC1.old ]] && nmcli dev disconnect $(cat /tmp/NIC1.old)
+[[ -f /tmp/NIC2.old ]] && nmcli dev disconnect $(cat /tmp/NIC2.old)
+
+# Default host and role
+domain=lab.example.com
+role=virtual && myhost=localhost.localdomain
+
+# Configure NIC1 - based on MAC address
+# Calculate elements of MAC address
+nic1mac=$(ip link show ${NIC1} | awk '/ether/{print $2}')
+physint=$[ 0x$(echo ${nic1mac} | cut -d: -f4) ]
+subnet=$[ 0x$(echo ${nic1mac} | cut -d: -f5) ]
+station=$[ 0x$(echo ${nic1mac} | cut -d: -f6) ]
+[[ ${station} -eq 0 ]] && X=250 || X=${station}
+# Set host and role
+[[ $X -eq 254 ]] && role=bastion && myhost=bastion.${domain}
+[[ $X -eq 9 ]] && role=workstation && myhost=workstation.${domain}
+[[ $X -eq 10 ]] && role=servera && myhost=servera.${domain}
+[[ $X -eq 11 ]] && role=serverb && myhost=serverb.${domain}
+[[ $X -eq 12 ]] && role=serverc && myhost=serverc.${domain}
+[[ $X -eq 13 ]] && role=serverd && myhost=serverd.${domain}
+[[ $X -eq 14 ]] && role=servere && myhost=servere.${domain}
+[[ $X -eq 15 ]] && role=serverf && myhost=serverf.${domain}
+sed -i -e "s|^RHT_ROLE=.*|RHT_ROLE=${role}|" /etc/rht
+hostnamectl set-hostname "${myhost}"
+# Create config file if missing
+if [[ -z "${UUID1}" || "${UUID1}" == "--" ]]; then
+  nmcli con add type ethernet con-name ${NIC1} ifname ${NIC1}
+  UUID1=$(nmcli -t -f DEVICE,UUID,NAME con show | grep ${NIC1} | cut -d: -f2)
+fi
+# Configure first NIC
+nmcli con mod uuid ${UUID1} connection.autoconnect yes
+nmcli con mod uuid ${UUID1} ipv4.ignore-auto-dns yes
+nmcli con mod uuid ${UUID1} ipv6.ignore-auto-dns yes
+nmcli con mod uuid ${UUID1} ipv4.addresses "172.25.${subnet}.${X}/24"
+[[ "${role}" != "bastion" ]] && 
+  nmcli con mod uuid ${UUID1} ipv4.gateway 172.25.${subnet}.254
+nmcli con mod uuid ${UUID1} ipv4.dns 172.25.${subnet}.254
+nmcli con mod uuid ${UUID1} ipv4.dns-search "${domain},example.com"
+nmcli con mod uuid ${UUID1} ipv4.method manual
+[[ "${role}" == "bastion" ]] && 
+  nmcli con mod uuid ${UUID1} connection.zone trusted
+
+# Configure NIC2 - based on MAC address (only on bastion)
+[[ "${role}" != "bastion" ]] && NIC2=""
+
+if [[ -n "${NIC2}" ]]; then
+  echo "Starting configuration of ${NIC2}..."
+  nmcli con up ifname ${NIC2} &>/dev/null
+  UUID2=$(nmcli -t -f DEVICE,UUID,NAME con show | grep ${NIC2} | cut -d: -f2)
+  if [[ -z "${UUID2}" || "${UUID2}" == "--" ]]; then
+    # Obtain HWADDR
+    N2HW=$(ip link sh ${NIC2} | grep k/eth | sed 's/^    //' | cut -d' ' -f2)
+    N2HW=${N2HW^^}
+    # Get filename that has HWADDR
+    N2FILE=$(grep -l ${N2HW} /etc/sysconfig/network-scripts/ifcfg-* | tail -1)
+    if [[ -n "${N2FILE}" ]]; then
+      # Get UUID from that filename
+      UUID2=$(grep '^UUID' ${N2FILE} | sed 's/UUID=//')
+    else
+      N2FILE=$(grep -l ${NIC2} /etc/sysconfig/network-scripts/ifcfg-* | tail -1)
+      if [[ -n "${N2FILE}" ]]; then
+        # Get UUID from that filename
+        UUID2=$(grep '^UUID' ${N2FILE} | sed 's/UUID=//')
+      fi
+    fi
+  fi
+  # Calculate elements of MAC address
+  nic2mac=$(ip link show ${NIC2} | awk '/ether/{print $2}')
+  physint=$[ 0x$(echo ${nic2mac} | cut -d: -f4) ]
+  subnet=$[ 0x$(echo ${nic2mac} | cut -d: -f5) ]
+  station=$[ 0x$(echo ${nic2mac} | cut -d: -f6) ]
+  [[ ${station} -eq 0 ]] && X=250 || X=${station}
+  [[ "${role}" == "bastion" ]] && network=25 || network=24
+  # Create config file if missing
+  if [[ -z "${UUID2}" || "${UUID2}" == "--" ]]; then
+    nmcli con add type ethernet con-name ${NIC2} ifname ${NIC2}
+    UUID2=$(nmcli -t -f DEVICE,UUID,NAME con show | grep ${NIC2} | cut -d: -f2)
+  fi
+  # Configure second NIC
+  nmcli con mod uuid ${UUID2} connection.autoconnect yes
+  nmcli con mod uuid ${UUID2} ipv4.ignore-auto-dns yes
+  nmcli con mod uuid ${UUID2} ipv6.ignore-auto-dns yes
+  nmcli con mod uuid ${UUID2} ipv4.addresses "172.${network}.${subnet}.${X}/24"
+  [[ "${role}" == "bastion" ]] && 
+    nmcli con mod uuid ${UUID2} ipv4.gateway 172.${network}.${subnet}.254
+  nmcli con mod uuid ${UUID2} ipv4.method static
+  [[ "${role}" == "bastion" ]] && 
+    nmcli con mod uuid ${UUID2} connection.zone external
+  [[ "${role}" == "bastion" ]] &&
+    sed -i -e "s|^RHT_ENROLLMENT=.*|RHT_ENROLLMENT=${station}|" /etc/rht
+fi
+
+# Get NetworkManager to re-read then activate files
+nmcli con reload
+nmcli dev disconnect ${NIC1} &>/dev/null
+[[ -n "${NIC2}" ]] && nmcli dev disconnect ${NIC2} &>/dev/null
+nmcli con up uuid ${UUID1} &>/dev/null
+[[ -n "${NIC2}" ]] && nmcli con up uuid ${UUID2} &>/dev/null
+
+# If on gateway system, modify configuration in dnsmasq.d/training.conf
+if [[ "${role}" == "bastion" ]]; then
+  sed -i -e "s/^interface=.*/interface=${NIC1}/" \
+         -e "s/^no-dhcp-interface=.*/no-dhcp-interface=${NIC1}/" \
+      /etc/dnsmasq.d/training.conf
+  systemctl restart dnsmasq.service
+fi
+
+echo "rht-vmsetup-ifcfg done"
+

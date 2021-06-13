@@ -1,0 +1,135 @@
+#!/bin/bash
+
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     rht-vmsetup-getkeys - Red Hat Training Setup get enrollment and keys 
+#
+# SYNOPSIS
+#     rht-vmsetup-getkeys
+#
+# DESCRIPTION
+#     Personalizes VM with RHT_ENROLLMENT and student SSH key.
+#
+# CHANGELOG
+#   * Fri May  3 2019 Robert Locke <rlocke@redhat.com>
+#   - initial rhel8.x fork
+
+# Source the variables if available
+[[ -r /etc/rht ]] && source /etc/rht
+venue=${RHT_VENUE:=ilt}
+
+function print_usage() {
+  local retcode=$1
+  cat <<-EOF
+$0 is a script to get course code and other bits.
+
+Usage: $0
+  will configure virtual machine with enrollment and keys.
+
+Usage: $0 --help
+  will display this usage information.
+
+EOF
+  exit ${retcode}
+}
+
+function parse_opts() {
+  ARGS=$(getopt -o h -l "help" -n "rht-vmsetup-getkeys" -- "$@")
+  if [[ $? -ne 0 ]]; then
+    print_usage 1
+  fi
+  eval set -- "${ARGS}"
+  while true ; do
+    case $1 in
+      -h|--help)
+        print_usage 0 ;;
+      --)
+        shift ; break ;;
+      *)
+        echo "Error: bad option, $1" ; print_usage 1 ;;
+    esac
+  done
+}
+
+# If not root, then sudo ourself and run as root
+if [[ "${EUID}" -gt "0" ]]; then
+  ${sudo:-/usr/bin/sudo} $0 "$@"
+  exit
+fi
+
+# Parse arguments
+parse_opts "$@"
+
+# Main code
+
+# Access existing variable values
+source /etc/rht
+
+echo "Starting download of student specific variables/keys..."
+
+# Download default student variables
+if [[ "${RHT_ROLE}" == "bastion" ]]; then
+  url="http://content.example.com/ks/rht"
+  lclfile=/tmp/rht-default
+else
+  url="http://172.25.250.254/rht"
+  lclfile=/tmp/rht-bastion
+fi
+counter=1
+while true ; do
+  if curl -f -s -o ${lclfile} ${url} ; then
+    break
+  fi
+  sleep 3
+  let counter+1
+  if [[ counter -gt 20 ]]; then
+    echo "$(date -R): RHT_VENUE download FAILED!" >> /tmp/rclocal.log
+    break
+  fi
+done
+
+# Set RHT_ENROLLMENT if not bastion
+if [[ "${RHT_ROLE}" != "bastion" ]]; then
+  enrollment=$(sed -n 's/RHT_ENROLLMENT=//p' ${lclfile})
+  if [[ -n "${enrollment}" ]]; then
+    sed -i -e "s|^RHT_ENROLLMENT=.*|RHT_ENROLLMENT=${enrollment}|" /etc/rht
+  else
+    echo "$(date -R): RHT_ENROLLMENT setting FAILED!" >> /tmp/rclocal.log
+  fi
+fi
+venue=$(sed -n 's/RHT_VENUE=//p' ${lclfile})
+if [[ -n "${venue}" ]]; then
+  sed -i -e "s|^RHT_VENUE=.*|RHT_VENUE=${venue}|" /etc/rht
+else
+  echo "$(date -R): RHT_VENUE setting FAILED!" >> /tmp/rclocal.log
+fi
+
+# Download ssh keys
+source /etc/rht
+if [[ -n "${RHT_ENROLLMENT}" ]]; then
+  # Download student0Key.pub
+  curl -f -s -o /tmp/student0Key.pub http://content.example.com/ks/sshkeys/student0Key.pub 
+  # Download student${RHT_ENROLLMENT}Key.pub
+  if [[ ${RHT_ENROLLMENT} -ne 0 ]]; then
+    curl -f -s -o /tmp/student${RHT_ENROLLMENT}Key.pub http://content.example.com/ks/sshkeys/student${RHT_ENROLLMENT}Key.pub 
+  fi
+  # If we got either file, remove existing entries
+  if [[ -f /tmp/student0Key.pub || -f /tmp/student${RHT_ENROLLMENT}Key.pub ]]; then
+    sed -i -e '/student/d' /etc/.rht_authorized_keys
+    # Add each file to ~kiosk and ~root
+    for keyfile in student0Key.pub student${RHT_ENROLLMENT}Key.pub ; do
+      if grep student /tmp/${keyfile} &>/dev/null ; then
+        cat /tmp/${keyfile} >> /etc/.rht_authorized_keys
+        echo "$(date -R): ${keyfile} added" >> /tmp/rclocal.log
+      fi
+    done
+  else
+    echo "$(date -R): No studentKey downloaded - no ssh keys!" >> /tmp/rclocal.log
+  fi
+else
+  echo "$(date -R): RHT_ENROLLMENT never set - no ssh keys!" >> /tmp/rclocal.log
+fi
+
+echo "rht-vmsetup-getkeys done"
+

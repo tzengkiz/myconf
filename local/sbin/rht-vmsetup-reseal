@@ -1,0 +1,93 @@
+#!/bin/bash
+
+# Copyright 2019 Red Hat, Inc.
+#
+# NAME
+#     rht-vmsetup-reseal - Red Hat Training Setup re-seal virtual machine 
+#
+# SYNOPSIS
+#     rht-vmsetup-reseal [-n|--network] [-c|--course]
+#
+# DESCRIPTION
+#     Sets up VM for automatic self-actualization at next boot.
+#
+# CHANGELOG
+#   * Wed Jan 30 2019 Robert Locke <rlocke@redhat.com>
+#   - initial rhel8.x fork
+
+# Source the variables if available
+[[ -r /etc/rht ]] && source /etc/rht
+venue=${RHT_VENUE:=ilt}
+
+function print_usage() {
+  local retcode=$1
+  cat <<-EOF
+$0 is a script to reseal the VM for firstboot self-actualization.
+
+Usage: $0 --network
+  will configure virtual machine to redetect network interfaces.
+
+Usage: $0 --course
+  will configure virtual machine to redetect course deployed.
+
+Usage: $0 [--help] (default)
+  will display this usage information.
+
+EOF
+  exit ${retcode}
+}
+
+function parse_opts() {
+  ARGS=$(getopt -o hnc -l "help,network,course" -n "rht-vmsetup-reseal" -- "$@")
+  if [[ $? -ne 0 ]]; then
+    print_usage 1
+  fi
+  eval set -- "${ARGS}"
+  while true ; do
+    case $1 in
+      -h|--help)
+        print_usage 0 ;;
+      -n|--network)
+        network=yes ; shift ;;
+      -c|--course)
+        course=yes ; shift ;;
+      --)
+        shift ; break ;;
+      *)
+        echo "Error: bad option, $1" ; print_usage 1 ;;
+    esac
+  done
+  [[ -z ${network} && -z ${course} ]] && print_usage 0
+}
+
+function reset_network() {
+  # Change/Add RHT_NETWORK to no
+  grep -q "^RHT_NETWORK=" /etc/rht &&
+    sed -i -e "s/^RHT_NETWORK=.*/RHT_NETWORK=no/" /etc/rht ||
+    sed -i -e "$ a\RHT_NETWORK=yes" /etc/rht
+}
+
+function reset_course() {
+  # Change/Add RHT_COURSE/RHT_TITLE to blank
+  grep -q "^RHT_COURSE=" /etc/rht &&
+    sed -i -e "s/^RHT_COURSE=.*/RHT_COURSE=/" /etc/rht ||
+    sed -i -e "$ a\RHT_COURSE=" /etc/rht
+  grep -q "^RHT_TITLE=" /etc/rht &&
+    sed -i -e "s/^RHT_TITLE=.*/RHT_TITLE=/" /etc/rht ||
+    sed -i -e "$ a\RHT_TITLE=" /etc/rht
+}
+
+# If not root, then sudo ourself and run as root
+if [[ "${EUID}" -gt "0" ]]; then
+  ${sudo:-/usr/bin/sudo} $0 "$@"
+  exit
+fi
+
+# Parse arguments
+parse_opts "$@"
+
+# Main area
+[[ -n ${network} ]] && reset_network
+[[ -n ${course} ]] && reset_course
+exit 0
+
