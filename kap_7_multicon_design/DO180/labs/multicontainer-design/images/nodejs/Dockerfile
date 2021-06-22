@@ -22,3 +22,14 @@ USER	appuser
 WORKDIR	${HOME}
 
 CMD	["echo", "You must create your own container from this one."]
+
+######
+# Mit dem Befehl ENV werden die zwei Umgebungsvariablen NODEJS_VERSION und HOME definiert.
+# Pakete, die für die Node.js-Anwendung benötigt werden, werden unter Verwendung von yum in Kombination mit dem Befehl RUN installiert.
+# Zum Ausführen der Node.js-Anwendung und des Verzeichnisses app-root werden mithilfe des Befehls RUN ein neuer Benutzer und eine neue Gruppe erstellt.
+# Das Skript enable-rh-nodejs8.sh, das bei der Anmeldung automatisch ausgeführt wird, wird über den Befehl ADD zu /etc/profile.d/ hinzugefügt.
+# Der Befehl USER wird verwendet, um zum neu erstellten Konto appuser zu wechseln.
+# Der Befehl WORKDIR wird verwendet, um zum Verzeichnis $HOME für die Anwendungsausführung zu wechseln.
+
+# sudo podman build -t do180/nodejs --layers=false .
+
