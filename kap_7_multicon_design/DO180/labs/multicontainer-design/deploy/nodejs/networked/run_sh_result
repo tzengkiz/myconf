@@ -1,0 +1,18 @@
+student@workstation networked]$ ls
+db.sql  README.md  run.sh  stop.sh  work
+
+[student@workstation networked]$ sudo podman ps -a
+CONTAINER ID  IMAGE  COMMAND  CREATED  STATUS  PORTS  NAMES
+
+[student@workstation networked]$ ./run.sh
+Create database volume...
+51a4bfa0ec1d435028ffc76d892996482b080b11389be7e60780314555bc9475
+c311f454e160ee081530296e762a9b9459addb7d6ac49194ee9d3d0a578d37ff
+
+[student@workstation networked]$ sudo podman ps -a
+CONTAINER ID  IMAGE                                  COMMAND               CREATED         STATUS             PORTS                     NAMES
+c311f454e160  localhost/do180/todonodejs:latest      scl enable rh-nod...  24 seconds ago  Up 23 seconds ago  0.0.0.0:30080->30080/tcp  todoapi
+51a4bfa0ec1d  localhost/do180/mysql-57-rhel7:latest  run-mysqld            33 seconds ago  Up 33 seconds ago  0.0.0.0:30306->3306/tcp   mysql
+
+[student@workstation networked]$ 
+
