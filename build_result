@@ -1,0 +1,35 @@
+[student@workstation nodejs]$ ./build.sh
+Preparing build folder
+STEP 1: FROM do180/nodejs
+STEP 2: ARG NEXUS_BASE_URL
+STEP 3: MAINTAINER username <username@example.com>
+STEP 4: COPY run.sh build ${HOME}/
+STEP 5: RUN scl enable rh-nodejs8 'npm install --registry=http://$NEXUS_BASE_URL/repository/nodejs/'
+npm WARN deprecated uuid@3.4.0: Please upgrade  to version 7 or higher.  Older versions may use Math.random() in certain circumstances, which is known to be problematic.  See https://v8.dev/blog/math-random for details.
+
+> dtrace-provider@0.8.8 install /opt/app-root/src/node_modules/dtrace-provider
+> node-gyp rebuild || node suppress-error.js
+
+make: Entering directory `/opt/app-root/src/node_modules/dtrace-provider/build'
+  TOUCH Release/obj.target/DTraceProviderStub.stamp
+make: Leaving directory `/opt/app-root/src/node_modules/dtrace-provider/build'
+npm notice created a lockfile as package-lock.json. You should commit this file.
+added 144 packages from 260 contributors in 6.373s
+
+7 packages are looking for funding
+  run `npm fund` for details
+
+STEP 6: EXPOSE	30080
+STEP 7: CMD	["scl","enable","rh-nodejs8","./run.sh"]
+STEP 8: COMMIT do180/todonodejs
+Getting image source signatures
+Copying blob 5601485f0109 skipped: already exists
+Copying blob ac7577b8c383 skipped: already exists
+Copying blob 5c09f3c50d8d skipped: already exists
+Copying blob b99bb80336e2 done
+Copying config d14614b7e5 done
+Writing manifest to image destination
+Storing signatures
+d14614b7e5614b083baf58566e4f9a02b9c029d993eaa21ec180caf99c22d307
+[student@workstation nodejs]$ 
+
