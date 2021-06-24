@@ -230,28 +230,3 @@ template.template.openshift.io/myapp-persistent created
 $ oc process myapp-persistent -p APP_NAME=myapp-dev -p VOLUME_CAPACITY=1Gi | oc create -f -
 deploymentconfig/myapp created
 persistentvolumeclaim/myapp created
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
